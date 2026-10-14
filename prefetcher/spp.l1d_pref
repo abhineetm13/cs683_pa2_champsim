@@ -8,7 +8,7 @@
 #define SIGNATURE_CONF_MAX 3
 #define SIGNATURE_CONF_THRESHOLD 2
 #define ACCURACY_EPOCH 256
-#define UNIFORM_STRIDE_THRESHOLD 3
+#define UNIFORM_STRIDE_THRESHOLD 2
 #define UNIFORM_CONF_MAX 7
 
 // update degree based on recent prefetch accuracy
@@ -26,7 +26,7 @@ class Throttle {
 
     void update_degree(CACHE* cache)
     {
-        uint64_t issued_now = cache->pf_issued;
+        uint64_t issued_now = cache->pf_lower_level;
         uint64_t useful_now = cache->pf_useful;
 
         // ChampSim may reset statistics after warmup.
@@ -46,9 +46,9 @@ class Throttle {
         uint32_t accuracy = static_cast<uint32_t>(std::min<uint64_t>(100, (100 * useful_delta) / issued_delta));
 
         if (accuracy >= 60)
-            this->degree = 4;
+            this->degree = 6;
         else if (accuracy >= 30)
-            this->degree = 2;
+            this->degree = 3;
         else
             this->degree = 1;
 
@@ -258,17 +258,17 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
 
     IP_TRACKER& tracker = trackers[index];
 
-    // need to update the aggressiveness based on the accuracy
+    // update the aggressiveness based on the accuracy
     throttle.update_degree(this);
 
-    // The signature of the old history maps to the newly observed stride.
+    // signature of the old history maps to the newly observed stride
     uint16_t old_signature = 0;
     if (make_signature(tracker.last_strides, tracker.last_strides_head,
                        tracker.history_count, old_signature)) {
         train_signature(tracker, old_signature, stride);
     }
 
-    // Train the higher-priority uniform-stride predictor.
+    // update uniform-stride predictor
     if (tracker.history_count > 0 && stride == tracker.uniform_stride) {
         if (tracker.uniform_confidence < UNIFORM_CONF_MAX)
             tracker.uniform_confidence++;
@@ -278,7 +278,7 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
         tracker.uniform_confidence = 1;
     }
 
-    // Only real demand strides update the real history.
+    // update data-structures with new stride
     push_stride(tracker.last_strides, tracker.last_strides_head,
                 tracker.history_count, stride);
     tracker.last_cl_addr = cl_addr;

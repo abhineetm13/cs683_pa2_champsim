@@ -1,3 +1,5 @@
+set -euo
+
 echo "Building..."
 ./build_champsim.sh ip_stride lru baseline > outputs/ip_stride_build_logs.txt 2>&1
 ./build_champsim.sh spp lru baseline > outputs/spp_build_logs.txt 2>&1
