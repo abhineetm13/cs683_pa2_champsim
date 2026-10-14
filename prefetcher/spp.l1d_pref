@@ -1,11 +1,11 @@
 #include "cache.h"
 
 #define IP_TRACKER_COUNT 24
-#define PREFETCH_DEGREE 3
 #define MASK_IP 0xFF
 #define D 10
-#define PREFETCH_CACHE_LEN
+#define PREFETCH_CACHE_LEN 10
 #define ACCURACY_EPOCH 256
+#define UNIFORM_STRIDE_THRESHOLD 3
 
 // maintain possible cycle lengths, and a list of last D strides
 // maybe try to detect cycle lengths of upto some distance D into the past
@@ -54,14 +54,14 @@ class Throttle {
         uint32_t accuracy = static_cast<uint32_t>(std::min<uint64_t>(100, (100 * useful_delta) / issued_delta));
 
         if (accuracy >= 60)
-            throttle.degree = 4;
+            this->degree = 4;
         else if (accuracy >= 30)
-            throttle.degree = 2;
+            this->degree = 2;
         else
-            throttle.degree = 1;
+            this->degree = 1;
 
-        throttle.issued_base = issued_now;
-        throttle.useful_base = useful_now;
+        this->issued_base = issued_now;
+        this->useful_base = useful_now;
     }
 };
 
@@ -70,18 +70,19 @@ class IP_TRACKER {
     // the IP we're tracking
     uint64_t ip;
 
+    bool valid;
+
     // the last address accessed by this IP
     uint64_t last_cl_addr;
 
     // the last D strides between addresses accessed by this IP
     int64_t last_strides[D+1]; // buffer which acts like a queue with max length D
-    uint last_strides_head;
+    int last_strides_head;
     
     // possible cycle lengths: non-zero if cycle length=i is possible, 0 if not possible
     int cycle_length_scores[D+1];
 
-    // previous prefetches cache
-    uint64_t prev_prefetches[PREFETCH_CACHE_LEN];
+
 
     // use LRU to evict old IP trackers
     uint32_t lru;
@@ -89,15 +90,16 @@ class IP_TRACKER {
     IP_TRACKER () {
         ip = 0;
         last_cl_addr = 0;
-        for (int i = 0; i < D; i++) last_strides[i] = 0;
-        for (int i = 0; i < D; i++) cycle_lengths[i] = 0;
+        for (int i = 0; i < D+1; i++) last_strides[i] = 0;
+        last_strides_head = 0;
+        for (int i = 0; i < D+1; i++) cycle_length_scores[i] = 0;
         for (int i = 0; i < PREFETCH_CACHE_LEN; i++) prev_prefetches[i] = 0;
         lru = 0;
     };
 };
 
 IP_TRACKER trackers[IP_TRACKER_COUNT];
-Throttle throttle;
+Throttle throttle = Throttle();
 
 
 
@@ -122,7 +124,7 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
 
     int index = -1;
     for (index=0; index<IP_TRACKER_COUNT; index++) {
-        if (trackers[index].ip == ip)
+        if (trackers[index].valid && trackers[index].ip == ip)
             break;
     }
 
@@ -134,9 +136,11 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
                 break;
         }
 
+        trackers[index] = IP_TRACKER();
         trackers[index].ip = ip;
+        trackers[index].valid = true;
         trackers[index].last_cl_addr = cl_addr;
-        trackers[index].last_stride = 0;
+        trackers[index].last_strides[trackers[index].last_strides_head] = 0;
 
         //cout << "[IP_STRIDE] MISS index: " << index << " lru: " << trackers[index].lru << " ip: " << hex << ip << " cl_addr: " << cl_addr << dec << endl;
 	for (int i=0; i<IP_TRACKER_COUNT; i++) {
@@ -166,26 +170,60 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
 
     //cout << "[IP_STRIDE] HIT  index: " << index << " lru: " << trackers[index].lru << " ip: " << hex << ip << " cl_addr: " << cl_addr << dec << " stride: " << stride << endl;
 
+    // don't do anything if we somehow saw the same address twice in a row
+    if (stride == 0)
+        return;	//metadata_in;
+
     // need to update the aggressiveness based on the accuracy
     throttle.update_degree(this);
 
     // prefetching logic
-    for (int i = 2; i <= D; i++) {
-        if (last_strides[(last_strides_head-i)%(D+1)] == stride) {
-            cycle_length_scores[i]++;
-        }
-        else {
-            cycle_length_scores[i] = 0;
-        }
+
+    // first check for uniform stride
+    if (trackers[index].last_strides[(trackers[index].last_strides_head-1)%(D+1)] == stride) {
+        trackers[index].cycle_length_scores[1]++;
+    }
+    else {
+        trackers[index].cycle_length_scores[1] = 0;
     }
 
-    // need to select the stride pattern cycle length
+    if (trackers[index].cycle_length_scores[1] > UNIFORM_STRIDE_THRESHOLD) {
+        for (int i=0; i<throttle.degree; i++) {
+            uint64_t pf_address = (cl_addr + (stride*(i+1))) << LOG2_BLOCK_SIZE;
 
-    // need to do the prefetching
+            // only issue a prefetch if the prefetch address is in the same 4 KB page
+            // as the current demand access address
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+                break;
 
+            // check the MSHR occupancy to decide if we're going to prefetch to the L1 or L2
+            if (MSHR.occupancy < (MSHR.SIZE>>1))
+                prefetch_line(ip, addr, pf_address, FILL_L1, 0);
+            else
+                prefetch_line(ip, addr, pf_address, FILL_L2, 0);
+        }
+    }
+    else {
+        // check for non-uniform strides
+        for (int i = 2; i <= D; i++) {
+            if (trackers[index].last_strides[(trackers[index].last_strides_head-i)%(D+1)] == stride) {
+                trackers[index].cycle_length_scores[i]++;
+            }
+            else {
+                trackers[index].cycle_length_scores[i] = trackers[index].cycle_length_scores[i] > 0 ? 
+                                                            trackers[index].cycle_length_scores[i] - 1 : 0;
+            }
+        }
+
+        // need to select the stride pattern cycle length
+
+        // need to do the prefetching
+    }
 
     trackers[index].last_cl_addr = cl_addr;
-    trackers[index].last_stride = stride;
+    trackers[index].last_strides[trackers[index].last_strides_head] = stride;
+    trackers[index].last_strides_head++;
+    trackers[index].last_strides_head %= (D+1);
 
     for (int i=0; i<IP_TRACKER_COUNT; i++) {
         if (trackers[i].lru < trackers[index].lru)
