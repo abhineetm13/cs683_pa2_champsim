@@ -1,0 +1,124 @@
+#include "cache.h"
+
+// Dynamic I-RRIP using direct policy competition. Thirty-two leader sets run
+// RRIP permanently, another thirty-two run insertion-only I-RRIP permanently,
+// and all follower sets use the policy selected by a saturating PSEL counter.
+
+#define MAX_RRPV 3
+#define NUM_LEADER_SETS 32
+#define PSEL_MAX 1023
+#define PSEL_MIDPOINT ((PSEL_MAX + 1) / 2)
+
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+uint32_t psel = PSEL_MIDPOINT;
+
+uint64_t rrip_leader_misses = 0;
+uint64_t irrip_leader_misses = 0;
+uint64_t follower_rrip_accesses = 0;
+uint64_t follower_irrip_accesses = 0;
+
+static uint32_t leader_interval()
+{
+    return L2C_SET / NUM_LEADER_SETS;
+}
+
+static bool is_rrip_leader(uint32_t set)
+{
+    return (set % leader_interval()) == 0;
+}
+
+static bool is_irrip_leader(uint32_t set)
+{
+    return (set % leader_interval()) == 1;
+}
+
+static bool use_irrip(uint32_t set)
+{
+    if (is_rrip_leader(set))
+        return false;
+    if (is_irrip_leader(set))
+        return true;
+    return psel >= PSEL_MIDPOINT;
+}
+
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize set-dueling I-RRIP state for L2C"
+         << " (" << NUM_LEADER_SETS << " RRIP leaders, "
+         << NUM_LEADER_SETS << " I-RRIP leaders)" << endl;
+
+    psel = PSEL_MIDPOINT;
+    rrip_leader_misses = 0;
+    irrip_leader_misses = 0;
+    follower_rrip_accesses = 0;
+    follower_irrip_accesses = 0;
+
+    for (uint32_t set = 0; set < L2C_SET; set++)
+        for (uint32_t way = 0; way < L2C_WAY; way++)
+            l2_rrpv[set][way] = MAX_RRPV;
+}
+
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id,
+                                uint32_t set, const BLOCK *current_set,
+                                uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    // Policy competition changes insertion only. Keeping standard RRIP
+    // eviction avoids protecting cold instructions twice and reduces the data
+    // miss penalty seen with instruction-aware insertion plus biased eviction.
+    while (true) {
+        for (uint32_t way = 0; way < L2C_WAY; way++)
+            if (l2_rrpv[set][way] == MAX_RRPV)
+                return way;
+
+        for (uint32_t way = 0; way < L2C_WAY; way++)
+            l2_rrpv[set][way]++;
+    }
+}
+
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set,
+                                          uint32_t way, uint64_t full_addr,
+                                          uint64_t ip, uint64_t victim_addr,
+                                          uint32_t type, uint8_t hit,
+                                          uint8_t isInstruction)
+{
+    const bool irrip = use_irrip(set);
+
+    if (hit)
+        l2_rrpv[set][way] = 0;
+    else if (irrip && isInstruction && type == LOAD)
+        l2_rrpv[set][way] = MAX_RRPV - 2; // RRPV 1
+    else
+        l2_rrpv[set][way] = MAX_RRPV - 1; // RRPV 2
+
+    // Only demand-load misses train PSEL. A miss in an RRIP leader is evidence
+    // for I-RRIP; a miss in an I-RRIP leader is evidence for RRIP.
+    if (type == LOAD && !hit) {
+        if (is_rrip_leader(set)) {
+            rrip_leader_misses++;
+            if (psel < PSEL_MAX)
+                psel++;
+        }
+        else if (is_irrip_leader(set)) {
+            irrip_leader_misses++;
+            if (psel > 0)
+                psel--;
+        }
+    }
+
+    if (type == LOAD && !is_rrip_leader(set) && !is_irrip_leader(set)) {
+        if (irrip)
+            follower_irrip_accesses++;
+        else
+            follower_rrip_accesses++;
+    }
+}
+
+void CACHE::l2c_replacement_final_stats()
+{
+    cout << "L2C set-dueling I-RRIP final PSEL: " << psel
+         << " / " << PSEL_MAX << endl;
+    cout << "L2C RRIP leader misses: " << rrip_leader_misses
+         << " I-RRIP leader misses: " << irrip_leader_misses << endl;
+    cout << "L2C follower LOAD accesses in RRIP/I-RRIP mode: "
+         << follower_rrip_accesses << "/" << follower_irrip_accesses << endl;
+}
