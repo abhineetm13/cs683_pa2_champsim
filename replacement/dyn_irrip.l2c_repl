@@ -103,18 +103,19 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     // cout << "CPU: " << cpu << "  L2C " << setw(9) << TYPE_NAME << " set: " << setw(5) << set << " way: " << setw(2) << way;
     // cout << hex << " paddr: " << setw(12) << paddr << " ip: " << setw(8) << ip << " victim_addr: " << victim_addr << dec << endl;
     
-    if (hit)
-        l2_rrpv[set][way] = 0;
+    if (hit) {
+        if (type == PREFETCH) // prefetch shouldn't count as reuse
+            l2_rrpv[set][way] = std::min(l2_rrpv[set][way], (uint32_t)(maxRRPV - 1));
+        else
+            l2_rrpv[set][way] = 0; // proven demand reuse
+    } 
     else {
-        if (use_irrip) {
-            if (isInstruction)
-                l2_rrpv[set][way] = maxRRPV-2;
-            else
-                l2_rrpv[set][way] = maxRRPV-1;  //insert with RRPV2
-        }
-        else {
-            l2_rrpv[set][way] = maxRRPV-1;  //insert with RRPV2
-        }
+        if (type == PREFETCH)
+            l2_rrpv[set][way] = maxRRPV - 1;
+        else if (use_irrip && isInstruction)
+            l2_rrpv[set][way] = maxRRPV - 2;
+        else
+            l2_rrpv[set][way] = maxRRPV - 1;
     }
 
     if (is_rrip_leader(set) && type == LOAD) {
