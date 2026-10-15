@@ -1,0 +1,5 @@
+bin/
+obj/
+traces/
+*.bak
+outputs/*_build_logs.txt
