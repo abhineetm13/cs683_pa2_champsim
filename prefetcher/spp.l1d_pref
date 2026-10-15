@@ -28,7 +28,7 @@
  *
  * 4. Accuracy throttle: every ACC_EPOCH prefetches sent to L2 we compute
  *    accuracy = useful / issued for that epoch and choose the degree for
- *    the next epoch (>= 70% -> 6, >= 40% -> 3, else 1).
+ *    the next epoch (>= 80% -> 7, >= 30% -> 3, else 1).
  *
  * Prediction
  * ----------
@@ -63,9 +63,9 @@ static int PT_CONF_MAX   = 3;    // PT confidence saturates here (2 bits)
 static int PT_THRESH     = 1;    // PT prediction used when conf >= this
 static int FILTER_SIZE   = 128;  // recent-prefetch filter entries (0 = off)
 static int ACC_EPOCH     = 256;  // prefetches per accuracy epoch
-static int ACC_HI        = 70;   // accuracy (%) thresholds
-static int ACC_LO        = 40;
-static int DEG_HI        = 6;    // degree for accuracy >= ACC_HI
+static int ACC_HI        = 80;   // accuracy (%) thresholds
+static int ACC_LO        = 30;
+static int DEG_HI        = 7;    // degree for accuracy >= ACC_HI
 static int DEG_MID       = 3;    // degree for ACC_LO <= accuracy < ACC_HI
 static int DEG_LO        = 1;    // degree for accuracy < ACC_LO
 static int DEG_INIT      = 3;
