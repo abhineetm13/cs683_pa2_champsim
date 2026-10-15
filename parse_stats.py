@@ -3,8 +3,8 @@
 
 Usage: parse_stats.py <outputs_dir> <baseline_tag> <tag1> [tag2 ...]
 
-Expects files named <outputs_dir>/<tag>-Trace<N>.txt. Writes
-<outputs_dir>/summary.csv and prints a table per metric group.
+Expects files named <outputs_dir>/<tag>-Trace<N>.txt. Writes a CSV named by
+$SUMMARY_CSV (default: summary.csv) and prints a table per metric group.
 Speedup and L1D coverage are computed against <baseline_tag>.
 """
 import csv
@@ -117,7 +117,9 @@ def main():
             geo[tag] = math.exp(sum(math.log(x) for x in s) / len(s))
 
     cols = list(rows[0].keys())
-    with open(os.path.join(out_dir, "summary.csv"), "w", newline="") as f:
+    summary_name = os.environ.get("SUMMARY_CSV", "summary.csv")
+    summary_path = os.path.join(out_dir, summary_name)
+    with open(summary_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(rows)
@@ -147,7 +149,7 @@ def main():
     print("\n== Geomean speedup ==")
     for tag, g in geo.items():
         print(f"{tag:<22}{g:.4f}")
-    print(f"\nCSV written to {os.path.join(out_dir, 'summary.csv')}")
+    print(f"\nCSV written to {summary_path}")
 
 
 if __name__ == "__main__":

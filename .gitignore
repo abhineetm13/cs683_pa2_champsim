@@ -3,3 +3,6 @@ obj/
 traces/
 *.bak
 outputs/*_build_logs.txt
+
+summary/
+__pycache__/
