@@ -1,55 +1,6 @@
-/*
- * L1D Stride Pattern Prefetcher (SPP) -- CS683 PA2, Task 1B
- *
- * Structures
- * ----------
- * 1. IP table (IPT): 64 sets x 4 ways, indexed by a folded hash of the load
- *    IP. Every entry tracks one load instruction:
- *      - partial IP tag
- *      - low 16 bits of the last cache-line address (enough to compute an
- *        in-page stride; strides beyond a page are useless since we never
- *        cross a 4 KB page)
- *      - uniform-stride predictor: last stride + 2-bit confidence
- *      - signature: compressed history of the last ~3 strides,
- *        sig = (sig << 4) ^ stride   (12 bits)
- *      - LRU bits
- *
- * 2. Pattern table (PT): 2048 entries shared by all IPs, indexed by
- *    hash(signature, IP). Maps "the last few strides of this IP" to
- *    "the next stride". Entry: partial signature tag, next stride, 2-bit
- *    confidence. Sharing one table (instead of one small table per IP)
- *    lets us track many more IPs for the same storage: the number of
- *    tracked IPs was the single biggest factor for coverage/accuracy.
- *
- * 3. Recent-prefetch filter: 128-entry direct-mapped table of recently
- *    issued prefetch lines, so we do not re-request lines that are already
- *    in flight / in the cache (saves PQ slots and L1D tag bandwidth; cuts
- *    prefetch requests ~5x with no loss in coverage).
- *
- * 4. Accuracy throttle: every ACC_EPOCH prefetches sent to L2 we compute
- *    accuracy = useful / issued for that epoch and choose the degree for
- *    the next epoch (>= 80% -> 7, >= 30% -> 3, else 1).
- *
- * Prediction
- * ----------
- * On every demand load of an IP:
- *   - train the PT entry of the old signature with the observed stride,
- *     train the uniform predictor, then update the signature
- *   - if the uniform stride is confident (seen 3 times in a row) issue
- *     `degree` prefetches at +s, +2s, ... (uniform has priority)
- *   - otherwise fall back to the non-uniform predictor: look up the next
- *     stride from the signature, build the speculative next signature from
- *     it, look up again ... up to `degree` times. This captures repeating
- *     stride sequences such as (+1,+2,+2,+2,+3)^n.
- *   - every prefetch stays inside the page of the triggering access.
- */
 #include "cache.h"
 #include <cstdlib>
 
-// ------------------------------------------------------------------ knobs
-// Tuned values (see the design-space sweep in the report). Building with
-// SPP_TUNE defined lets them be overridden from environment variables of
-// the same name; that is only used for sensitivity studies.
 static int IPT_SETS      = 64;   // IP table sets
 static int IPT_WAYS      = 4;    // IP table ways
 static int IPT_TAG_BITS  = 8;    // partial IP tag
@@ -78,7 +29,6 @@ static int DEG_INIT      = 3;
 #define CL_BITS 16               // low bits of the line address kept per IP
 #define FILTER_TAG_BITS 16       // partial line address kept in the filter
 
-// ------------------------------------------------------------- structures
 struct IPT_ENTRY {
     bool     valid;
     uint32_t tag;                // IPT_TAG_BITS
